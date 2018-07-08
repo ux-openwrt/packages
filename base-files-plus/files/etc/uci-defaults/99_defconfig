@@ -1,0 +1,92 @@
+#!/bin/sh
+board=`cat /tmp/sysinfo/board_name`
+. /etc/openwrt_release
+. /etc/device_info
+
+has_root_pwd() {
+    local pwd=$([ -f "$1" ] && cat "$1")
+    pwd="${pwd#*root:}"
+    pwd="${pwd%%:*}"
+
+    test -n "${pwd#[\!x]}"
+}
+
+has_root_pwd /etc/shadow && exit 0
+
+if [ -x /usr/sbin/chpasswd ]; then
+    echo root:welcome | chpasswd
+else
+    (echo welcome;sleep 1;echo welcome) | passwd root
+fi
+
+for i in `seq 0 9`
+do
+    case `uci get firewall.@zone[$i].name` in
+        lan) uci set firewall.@zone[$i].input='REJECT';;
+    esac
+done
+
+for i in `seq 0 9`
+do
+    case `uci get firewall.@rule[$i].name` in
+        Allow-DHCPv6) 
+            uci set firewall.@rule[$i].name='Allow-DHCPv6-Renew';
+            uci set firewall.@rule[$i].src='*';;
+        Allow-DHCP-Renew|Allow-Ping|Allow-IGMP|Allow-MLD|Allow-ICMPv6-Input|Allow-ICMPv6-Forward)
+            uci set firewall.@rule[$i].src='*';;
+    esac
+done
+
+uci -q batch <<-EOF >/dev/null
+set dropbear.@dropbear[0].Port=8888
+commit dropbear
+set system.@system[0].zonename='Asia/Shanghai'
+set system.@system[0].timezone='CST-8'
+commit system
+add firewall rule
+set firewall.@rule[-1].name='Allow-HTTP-Access'
+set firewall.@rule[-1].src='*'
+set firewall.@rule[-1].proto='tcp'
+set firewall.@rule[-1].dest_port='80'
+set firewall.@rule[-1].target='ACCEPT'
+add firewall rule
+set firewall.@rule[-1].name='Allow-SSH-Access'
+set firewall.@rule[-1].src='*'
+set firewall.@rule[-1].proto='tcp'
+set firewall.@rule[-1].dest_port='8888'
+set firewall.@rule[-1].target='ACCEPT'
+add firewall rule
+set firewall.@rule[-1].name='Allow-DNS-Access'
+set firewall.@rule[-1].src='*'
+set firewall.@rule[-1].proto='udp'
+set firewall.@rule[-1].dest_port='53'
+set firewall.@rule[-1].target='ACCEPT'
+add firewall rule
+set firewall.@rule[-1].name='Allow-DHCP'
+set firewall.@rule[-1].family='ipv4'
+set firewall.@rule[-1].src='*'
+set firewall.@rule[-1].proto='udp'
+set firewall.@rule[-1].dest_port='67'
+set firewall.@rule[-1].target='ACCEPT'
+add firewall rule
+set firewall.@rule[-1].name='Allow-DHCPv6'
+set firewall.@rule[-1].family='ipv6'
+set firewall.@rule[-1].src='*'
+set firewall.@rule[-1].proto='udp'
+set firewall.@rule[-1].dest_port='547'
+set firewall.@rule[-1].target='ACCEPT'
+commit firewall
+set dhcp.lan.start='100'
+set dhcp.lan.limit='100'
+set dhcp.lan.leasetime='1h'
+commit dhcp
+EOF
+
+wan=`uci get network.wan.ifname`
+[ "$wan" == "eth1" ] && uci -q batch <<-EOF >/dev/null
+set network.wan.ifname='eth0'
+set network.wan6.ifname='eth0'
+set network.lan.ifname='eth1'
+commit network
+EOF
+exit 0
